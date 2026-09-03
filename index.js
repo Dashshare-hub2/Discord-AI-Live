@@ -1,17 +1,29 @@
-import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } from 'discord.js';
-import { 
+const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const { 
   joinVoiceChannel, 
   createAudioPlayer, 
   createAudioResource, 
   AudioPlayerStatus, 
-  EndBehaviorType,
+  EndBehaviorType, 
   StreamType 
-} from '@discordjs/voice';
-import WebSocket from 'ws';
-import prism from 'prism-media';
-import dotenv from 'dotenv';
+} = require('@discordjs/voice');
+const WebSocket = require('ws');
+const prism = require('prism-media');
+const http = require('http');
+const { Readable } = require('stream');
+require('dotenv').config();
 
-dotenv.config();
+const PORT = process.env.PORT || 10000;
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('🤖 Discord Gemini Live Bot đang hoạt động ở port ' + PORT);
+});
+
+server.listen(PORT, () => {
+  console.log(`🌐 Web server đang lắng nghe tại cổng: ${PORT}`);
+});
+
 
 const client = new Client({
   intents: [
@@ -20,7 +32,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
   ],
 });
-
+ 
 const commands = [
   new SlashCommandBuilder().setName('join').setDescription('Mời bot vào kênh thoại/cuộc gọi riêng'),
   new SlashCommandBuilder().setName('leave').setDescription('Rời khỏi kênh thoại'),
@@ -46,10 +58,11 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'join') {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
-      return interaction.reply({ content: '❌ Bạn phải ở trong một Kênh thoại/Cuộc gọi trước!', ephemeral: true });
+      return interaction.reply({ content: '❌ Bạn phải ở trong một Kênh thoại trước!', ephemeral: true });
     }
 
     await interaction.deferReply();
+
 
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
@@ -69,15 +82,16 @@ client.on('interactionCreate', async (interaction) => {
     geminiWs.on('open', () => {
       console.log('🌐 Đã kết nối với Gemini Live API WebSocket');
       
+  
       const setupConfig = {
         setup: {
           model: 'models/gemini-2.0-flash-exp',
           generationConfig: {
-            responseModalities: ['AUDIO'], 
+            responseModalities: ['AUDIO'],
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: 'Puck', 
+                  voiceName: 'Puck', // Các giọng khả dụng: Puck, Charon, Kore, Fenrir, Aoede
                 },
               },
             },
@@ -90,17 +104,12 @@ client.on('interactionCreate', async (interaction) => {
     geminiWs.on('message', (data) => {
       try {
         const response = JSON.parse(data.toString());
-      
+        
         const base64Audio = response?.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
         if (base64Audio) {
           const audioBuffer = Buffer.from(base64Audio, 'base64');
           
-          // Tạo Audio Resource phát thẳng vào Discord (Gemini Audio mặc định PCM 24kHz)
-          const resource = createAudioResource(prism.Opus.Encoder, {
-            inputType: StreamType.Raw,
-          });
-
-          const audioStream = require('stream').Readable.from(audioBuffer);
+          const audioStream = Readable.from(audioBuffer);
           const pcmResource = createAudioResource(audioStream, {
             inputType: StreamType.Raw,
           });
@@ -112,15 +121,17 @@ client.on('interactionCreate', async (interaction) => {
       }
     });
 
+
     const receiver = connection.receiver;
     receiver.speaking.on('start', (userId) => {
-      if (userId === client.user.id) return;
+      if (userId === client.user.id) return; 
 
       console.log(`🎤 Đang nhận âm thanh từ User ID: ${userId}`);
 
       const opusStream = receiver.subscribe(userId, {
         end: { behavior: EndBehaviorType.AfterSilence, duration: 300 },
       });
+
 
       const pcmDecoder = new prism.opus.Decoder({ rate: 16000, channels: 1, frameSize: 960 });
       const pcmStream = opusStream.pipe(pcmDecoder);
@@ -146,11 +157,8 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'leave') {
-    const connection = joinVoiceChannel({
-      channelId: member.voice.channel.id,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-    });
+    const { getVoiceConnection } = require('@discordjs/voice');
+    const connection = getVoiceConnection(guild.id);
     
     if (connection) {
       connection.destroy();
