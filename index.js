@@ -13,7 +13,6 @@ const http = require('http');
 const { Readable } = require('stream');
 require('dotenv').config();
 
-// 1. MỞ CỔNG WEB SERVER PORT 10000
 const PORT = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -24,7 +23,6 @@ server.listen(PORT, () => {
   console.log(`🌐 Server web đang chạy tại port: ${PORT}`);
 });
 
-// 2. KHỞI TẠO DISCORD CLIENT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -34,7 +32,6 @@ const client = new Client({
   ],
 });
 
-// Khai báo Slash Commands
 const commands = [
   new SlashCommandBuilder()
     .setName('join')
@@ -44,7 +41,6 @@ const commands = [
     .setDescription('Rời khỏi phòng thoại'),
 ].map(cmd => cmd.toJSON());
 
-// 3. KHI BOT ONLINE -> TỰ ĐỘNG NẠP LỆNH SLASH TẬP TRUNG
 client.once('ready', async () => {
   console.log(`✅ BOT ĐÃ ONLINE: ${client.user.tag}`);
 
@@ -53,7 +49,6 @@ client.once('ready', async () => {
   try {
     console.log('🔄 Đang đăng ký Slash Commands...');
     
-    // Đăng ký lệnh cho tất cả các Server mà Bot đang tham gia
     const guilds = await client.guilds.fetch();
     for (const [guildId] of guilds) {
       await rest.put(
@@ -67,7 +62,6 @@ client.once('ready', async () => {
   }
 });
 
-// Nạp lệnh cho cả các Server mới được thêm vào sau này
 client.on('guildCreate', async (guild) => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
@@ -80,7 +74,6 @@ client.on('guildCreate', async (guild) => {
   }
 });
 
-// 4. XỬ LÝ SỰ KIỆN TƯƠNG TÁC LỆNH
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -94,7 +87,6 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.deferReply();
 
-    // Kết nối Voice
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: guild.id,
@@ -106,7 +98,6 @@ client.on('interactionCreate', async (interaction) => {
     const player = createAudioPlayer();
     connection.subscribe(player);
 
-    // Kết nối WebSocket Gemini Live
     const geminiWsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${process.env.GEMINI_API_KEY}`;
     const geminiWs = new WebSocket(geminiWsUrl);
 
@@ -127,7 +118,6 @@ client.on('interactionCreate', async (interaction) => {
       }));
     });
 
-    // Nhận âm thanh từ Gemini và phát lại vào Discord
     geminiWs.on('message', (data) => {
       try {
         const response = JSON.parse(data.toString());
@@ -143,7 +133,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     });
 
-    // Thu âm từ User gửi sang Gemini
     const receiver = connection.receiver;
     receiver.speaking.on('start', (userId) => {
       if (userId === client.user.id) return;
@@ -180,5 +169,4 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Mở kết nối Bot Discord
 client.login(process.env.DISCORD_TOKEN);
