@@ -3,9 +3,9 @@ const {
   joinVoiceChannel, 
   createAudioPlayer, 
   createAudioResource, 
-  AudioPlayerStatus, 
   EndBehaviorType, 
-  StreamType 
+  StreamType,
+  getVoiceConnection
 } = require('@discordjs/voice');
 const WebSocket = require('ws');
 const prism = require('prism-media');
@@ -13,43 +13,74 @@ const http = require('http');
 const { Readable } = require('stream');
 require('dotenv').config();
 
+// 1. MỞ CỔNG WEB SERVER PORT 10000
 const PORT = process.env.PORT || 10000;
-
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('🤖 Discord Gemini Live Bot đang hoạt động ở port ' + PORT);
+  res.end('🤖 Bot Gemini Live đang chạy!');
 });
 
 server.listen(PORT, () => {
-  console.log(`🌐 Web server đang lắng nghe tại cổng: ${PORT}`);
+  console.log(`🌐 Server web đang chạy tại port: ${PORT}`);
 });
 
-
+// 2. KHỞI TẠO DISCORD CLIENT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
   ],
 });
- 
+
+// Khai báo Slash Commands
 const commands = [
-  new SlashCommandBuilder().setName('join').setDescription('Mời bot vào kênh thoại/cuộc gọi riêng'),
-  new SlashCommandBuilder().setName('leave').setDescription('Rời khỏi kênh thoại'),
-];
+  new SlashCommandBuilder()
+    .setName('join')
+    .setDescription('Mời bot vào phòng thoại để nói chuyện với Gemini'),
+  new SlashCommandBuilder()
+    .setName('leave')
+    .setDescription('Rời khỏi phòng thoại'),
+].map(cmd => cmd.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
+// 3. KHI BOT ONLINE -> TỰ ĐỘNG NẠP LỆNH SLASH TẬP TRUNG
 client.once('ready', async () => {
-  console.log(`🤖 Bot đã sẵn sàng: ${client.user.tag}`);
+  console.log(`✅ BOT ĐÃ ONLINE: ${client.user.tag}`);
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
   try {
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('✅ Đã đăng ký Slash Commands.');
+    console.log('🔄 Đang đăng ký Slash Commands...');
+    
+    // Đăng ký lệnh cho tất cả các Server mà Bot đang tham gia
+    const guilds = await client.guilds.fetch();
+    for (const [guildId] of guilds) {
+      await rest.put(
+        Routes.applicationGuildCommands(client.user.id, guildId),
+        { body: commands }
+      );
+    }
+    console.log('🎉 Đăng ký Slash Commands thành công! Hãy gõ /join trong Discord.');
   } catch (error) {
-    console.error('Xảy ra lỗi đăng ký lệnh:', error);
+    console.error('❌ Lỗi đăng ký Slash Command:', error);
   }
 });
 
+// Nạp lệnh cho cả các Server mới được thêm vào sau này
+client.on('guildCreate', async (guild) => {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, guild.id),
+      { body: commands }
+    );
+  } catch (err) {
+    console.error(`Không thể nạp lệnh cho server ${guild.name}:`, err);
+  }
+});
+
+// 4. XỬ LÝ SỰ KIỆN TƯƠNG TÁC LỆNH
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -58,115 +89,96 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'join') {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
-      return interaction.reply({ content: '❌ Bạn phải ở trong một Kênh thoại trước!', ephemeral: true });
+      return interaction.reply({ content: '❌ Bạn phải vào một Kênh Thoại (Voice Channel) trước!', ephemeral: true });
     }
 
     await interaction.deferReply();
 
-
+    // Kết nối Voice
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: false, 
+      selfDeaf: false,
       selfMute: false,
     });
 
     const player = createAudioPlayer();
     connection.subscribe(player);
 
-
+    // Kết nối WebSocket Gemini Live
     const geminiWsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${process.env.GEMINI_API_KEY}`;
     const geminiWs = new WebSocket(geminiWsUrl);
 
     geminiWs.on('open', () => {
       console.log('🌐 Đã kết nối với Gemini Live API WebSocket');
-      
-  
-      const setupConfig = {
+      geminiWs.send(JSON.stringify({
         setup: {
           model: 'models/gemini-2.0-flash-exp',
           generationConfig: {
             responseModalities: ['AUDIO'],
             speechConfig: {
               voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: 'Puck', // Các giọng khả dụng: Puck, Charon, Kore, Fenrir, Aoede
-                },
+                prebuiltVoiceConfig: { voiceName: 'Puck' },
               },
             },
           },
         },
-      };
-      geminiWs.send(JSON.stringify(setupConfig));
+      }));
     });
 
+    // Nhận âm thanh từ Gemini và phát lại vào Discord
     geminiWs.on('message', (data) => {
       try {
         const response = JSON.parse(data.toString());
-        
         const base64Audio = response?.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
         if (base64Audio) {
           const audioBuffer = Buffer.from(base64Audio, 'base64');
-          
           const audioStream = Readable.from(audioBuffer);
-          const pcmResource = createAudioResource(audioStream, {
-            inputType: StreamType.Raw,
-          });
-
+          const pcmResource = createAudioResource(audioStream, { inputType: StreamType.Raw });
           player.play(pcmResource);
         }
       } catch (err) {
-        console.error('Lỗi xử lý phản hồi từ Gemini:', err);
+        console.error('Lỗi Gemini Audio:', err);
       }
     });
 
-
+    // Thu âm từ User gửi sang Gemini
     const receiver = connection.receiver;
     receiver.speaking.on('start', (userId) => {
-      if (userId === client.user.id) return; 
-
-      console.log(`🎤 Đang nhận âm thanh từ User ID: ${userId}`);
+      if (userId === client.user.id) return;
 
       const opusStream = receiver.subscribe(userId, {
         end: { behavior: EndBehaviorType.AfterSilence, duration: 300 },
       });
-
 
       const pcmDecoder = new prism.opus.Decoder({ rate: 16000, channels: 1, frameSize: 960 });
       const pcmStream = opusStream.pipe(pcmDecoder);
 
       pcmStream.on('data', (chunk) => {
         if (geminiWs.readyState === WebSocket.OPEN) {
-          const audioPayload = {
+          geminiWs.send(JSON.stringify({
             realtimeInput: {
-              mediaChunks: [
-                {
-                  mimeType: 'audio/pcm',
-                  data: chunk.toString('base64'),
-                },
-              ],
+              mediaChunks: [{ mimeType: 'audio/pcm', data: chunk.toString('base64') }],
             },
-          };
-          geminiWs.send(JSON.stringify(audioPayload));
+          }));
         }
       });
     });
 
-    await interaction.editReply('🎙️ Đã tham gia cuộc gọi! Bạn có thể bắt đầu nói chuyện với Gemini.');
+    await interaction.editReply('🎙️ Bot đã tham gia! Hãy nói chuyện trực tiếp với Gemini.');
   }
 
   if (commandName === 'leave') {
-    const { getVoiceConnection } = require('@discordjs/voice');
     const connection = getVoiceConnection(guild.id);
-    
     if (connection) {
       connection.destroy();
-      await interaction.reply('👋 Đã rời cuộc gọi.');
+      await interaction.reply('👋 Đã rời kênh thoại.');
     } else {
-      await interaction.reply({ content: 'Bot không nằm trong kênh thoại nào.', ephemeral: true });
+      await interaction.reply({ content: 'Bot hiện không ở trong kênh thoại nào.', ephemeral: true });
     }
   }
 });
 
+// Mở kết nối Bot Discord
 client.login(process.env.DISCORD_TOKEN);
